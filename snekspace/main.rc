@@ -1,0 +1,122 @@
+// Import necessary libraries
+use std::io::{self, Write};
+use std::net::{TcpListener, TcpStream};
+use std::thread;
+use std::time::Duration;
+
+// Define constants
+const MAX_CLIENTS: usize = 128;
+const MAX_PACKET_SIZE: usize = 4096;
+const SERVER_PORT: u16 = 7000;
+const TICKRATE_MS: u64 = 33;
+const TIMEOUT_MS: u64 = 15000;
+
+// Define a struct to represent a client
+struct Client {
+    stream: TcpStream,
+    connected: bool,
+    timeout: u64,
+    recv_buf: Vec<u8>,
+    send_buf: Vec<u8>,
+}
+
+// Define a function to handle a new client connection
+fn handle_connection(mut client: Client) {
+    println!("New client connected");
+    client.connected = true;
+
+    loop {
+        // Receive data from the client
+        let mut buf = [0; MAX_PACKET_SIZE];
+        match client.stream.read(&mut buf) {
+            Ok(size) => {
+                if size == 0 {
+                    // Connection closed by client
+                    println!("Client disconnected");
+                    client.connected = false;
+                    break;
+                } else {
+                    // Process received data
+                    println!("Received {} bytes from client", size);
+                    client.recv_buf.extend_from_slice(&buf[..size]);
+                }
+            },
+            Err(e) => {
+                // Error reading from client
+                println!("Error reading from client: {:?}", e);
+                client.connected = false;
+                break;
+            },
+        }
+    }
+}
+
+// Define the main function
+fn main() -> io::Result<()> {
+    // Initialize the TCP listener
+    // NOT PLATFORM INDEPENDENT = let listener = TcpListener::bind(("127.0.0.1", SERVER_PORT))?;
+    let listener = TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, SERVER_PORT))?;
+    // IPV6 SUPPORT
+    // std::net::Ipv6Addr::UNSPECIFIED instead of std::net::Ipv4Addr::UNSPECIFIED
+
+    // Initialize the client array
+    let mut clients = [None; MAX_CLIENTS];
+
+    // Start the server loop
+    loop {
+        // Accept incoming connections
+        if let Ok((stream, addr)) = listener.accept() {
+            // Find an available client slot
+            let index = clients.iter().position(|c| c.is_none()).unwrap_or(MAX_CLIENTS);
+
+            if index == MAX_CLIENTS {
+                // Server is full, reject connection
+                println!("Server is full, rejecting connection from {}", addr);
+                let mut buf = [0; MAX_PACKET_SIZE];
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(b"Server is full\n");
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+            } else {
+                // Add the new client to the client array
+                let mut client = Client {
+                    stream: stream.try_clone().unwrap(),
+                    connected: false,
+                    timeout: 0,
+                    recv_buf: Vec::new(),
+                    send_buf: Vec::new(),
+                };
+                clients[index] = Some(client);
+
+                // Spawn a new thread to handle the client
+                thread::spawn(move || {
+                    handle_connection(client);
+                });
+            }
+        }
+
+        // Handle connected clients
+        for client in clients.iter_mut().filter(|c| c.is_some()).map(|c| c.as_mut().unwrap()) {
+            if client.connected {
+                // Send data to the client
+                if !client.send_buf.is_empty() {
+                    let size = client.stream.write(&client.send_buf)?;
+                    println!("Sent {} bytes to client", size);
+                    client.send_buf.clear();
+                }
+
+                // Check for client timeout
+                client.timeout += TICKRATE_MS;
+                if client.timeout >= TIMEOUT_MS {
+                    println!("Client timed out");
+                    client.connected = false;
+                    break;
+                }
+            }
+        }
+
+                    // Sleep for the tick rate
+                    thread::sleep(Duration::from_millis(TICKRATE_MS));
+                }
+            }
+        }
+        
